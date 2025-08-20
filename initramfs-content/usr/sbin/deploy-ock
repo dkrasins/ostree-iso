@@ -1,0 +1,64 @@
+#! /bin/bash
+set -e
+set -x
+
+SYSROOT="/sysroot"
+BOOT="${SYSROOT}/boot"
+EFI="${BOOT}/efi"
+
+OSTREE="${SYSROOT}/ostree"
+OSTREE_REPO="${OSTREE}/repo"
+OS_NAME=ock
+
+# Deploy the ostree
+ostree admin init-fs --modern "$SYSROOT"
+ostree config --repo "$OSTREE_REPO" set sysroot.readonly true
+ostree admin os-init "$OS_NAME" --sysroot "$SYSROOT"
+
+IMAGE="$(grep -o -e 'ostree-source=[^ ]*' /proc/cmdline)"
+if [ -z "$IMAGE" ]; then
+	IMAGE="oci-archive:/media/ostree.tar"
+fi
+
+ostree container unencapsulate --repo="$OSTREE_REPO" --write-ref "$OS_NAME" "$IMAGE"
+
+ostree admin deploy --sysroot "$SYSROOT" --os "$OS_NAME" \
+	--karg-proc-cmdline \
+	--karg-delete ignition.firstboot \
+	"$OS_NAME"
+
+
+ROOT_PATH="${SYSROOT}"
+BOOT_PATH="${ROOT_PATH}/boot"
+EFI_PATH="${BOOT_PATH}/efi"
+
+# Set up the fstab based on the current mount points
+# - get current mount points
+# - get UUID from device
+# - get fs type and options from mount table
+ROOT_DETAILS=$(findmnt --output SOURCE,FSTYPE,FS-OPTIONS -n --target "${ROOT_PATH}")
+BOOT_DETAILS=$(findmnt --output SOURCE,TARGET -n --target "${BOOT_PATH}")
+EFI_DETAILS=$(findmnt --output SOURCE,TARGET -n --target "${EFI_PATH}")
+ROOT_DEVICE=$(echo "$ROOT_DETAILS" | cut -d' ' -f1)
+BOOT_DEVICE=$(echo "$BOOT_DETAILS" | cut -d' ' -f1)
+EFI_DEVICE=$(echo "$EFI_DETAILS" | cut -d' ' -f1)
+
+ROOT_UUID=$(blkid -o value -s UUID "$ROOT_DEVICE")
+BOOT_UUID=$(blkid -o value -s UUID "$BOOT_DEVICE")
+EFI_UUID=$(blkid -o value -s UUID "$EFI_DEVICE")
+
+MOUNTS=$(cat /proc/mount)
+
+
+
+# boot, efi, and root are handled specially to protect against
+# cases where the same partition label is on multiple partitions
+cat > "${SYSROOT}/etc/fstab" << EOF
+UUID=$ROOT_UUID / $ROOT_FILESYSTEM defaults 0 0
+UUID=$BOOT_UUID /boot $BOOT_FILESYSTEM defaults,sync 0 0
+UUID=$EFI_UUID /boot/efi vfat defaults,uid=0,gid=0,umask=077,shortname=winnt 0 2
+EOF
+
+
+# from there, take all existing mounts under /sysroot and copy them
+# into the fstab with the same arguments
