@@ -9,6 +9,7 @@ IGNITION_PATH=config.ign
 
 # important iso paths
 ISO_DIR=./iso
+EFIBOOT_IMG_PATH="${ISO_DIR}/images/efiboot.img"
 IMAGES_DIR="${ISO_DIR}/images/pxeboot"
 ISOLINUX_DIR="${ISO_DIR}/isolinux"
 KERNEL_PATH="${IMAGES_DIR}/vmlinuz"
@@ -21,7 +22,8 @@ VESAMENU_PATH="${ISOLINUX_DIR}/vesamenu.c32"
 ISOLINUX_CFG_PATH="${ISOLINUX_DIR}/isolinux.cfg"
 ISOLINUX_KERNEL_PATH="${ISOLINUX_DIR}/vmlinuz"
 ISOLINUX_INITRD_PATH="${ISOLINUX_DIR}/initrd.img"
-BOOT_FILES_DIR="${ISO_DIR}/EFI/BOOT"
+BOOT_FILES_DIR="EFI/BOOT"
+BOOT_FILES_PATH="${ISO_DIR}/${BOOT_FILES_DIR}"
 
 SYSLINUX_DIR="/usr/share/syslinux"
 LOCAL_ISOLINUX_PATH="${SYSLINUX_DIR}/isolinux.bin"
@@ -84,11 +86,25 @@ copy_with_deps() {
 	local FILE="$1"
 	local ALT_ROOT="$2"
 	local NEW_ROOT="$3"
+	local DEPS_ONLY="$4"
+
+	if [ -z "$NEW_ROOT" ]; then
+		echo "copy_with_deps needs a non-empty new root path"
+		exit 1
+	fi
 
 	local DEPS=$(resolve_dependencies "$FILE" "$ALT_ROOT")
 	for dep in $DEPS; do
+		DIRNAME=$(dirname "${NEW_ROOT}${dep}")
+		mkdir -p "$DIRNAME"
 		cp "${ALT_ROOT}${dep}" "${NEW_ROOT}${dep}"
 	done
+
+	if [ -z "$DEPS_ONLY" ]; then
+		DIRNAME=$(dirname "${NEW_ROOT}${FILE}")
+		mkdir -p "$DIRNAME"
+		cp "${ALT_ROOT}${FILE}" "${NEW_ROOT}${FILE}"
+	fi
 }
 
 ARCHIVE_DIR=$(dirname "$ARCHIVE_PATH")
@@ -120,25 +136,18 @@ copy_to "$LOCAL_LDLINUX_PATH" "$LDLINUX_PATH"
 
 for f in $(find "${ROOT}/${CONTAINER_BOOT_FILES_DIR}" -type f); do
 	filename=$(basename "$f")
-	copy_to "$f" "${BOOT_FILES_DIR}/$filename"
+	copy_to "$f" "${BOOT_FILES_PATH}/$filename"
 done
+mkdir -p "${BOOT_FILES_PATH}/fonts"
+cp /boot/grub2/fonts/unicode.pf2 "${BOOT_FILES_PATH}/fonts/unicode.pf2"
 
 
 # Add stuff to the initramfs
 # - disable extra services that assume the rootfs is actually going to be used
 # - add new services to install the ostree from the disk
 # - add an ingition config to be used by the installed system
-TMP_INITRD_FIRMWARE_DIR="./initrd-early"
-mkdir -p "${TMP_INITRD_FIRMWARE_DIR}"
-pushd "${TMP_INITRD_FIRMWARE_DIR}"
-lsinitrd --unpackearly "$CONTAINER_INITRD_PATH"
-popd # TMP_INITRD_FIRMWARE_DIR
-
 TMP_INITRD_DIR="./initrd-scratch"
 mkdir -p "${TMP_INITRD_DIR}"
-pushd "${TMP_INITRD_DIR}"
-lsinitrd --unpack "$CONTAINER_INITRD_PATH"
-popd # TMP_INITRD_DIR
 
 # The depenencies for a couple programs need to get resolved.  That involes
 # traipsing around the container using its runtime linker and libraries.
@@ -146,11 +155,16 @@ popd # TMP_INITRD_DIR
 copy_with_deps /usr/bin/skopeo "$ROOT" "$TMP_INITRD_DIR"
 copy_with_deps /usr/bin/ostree "$ROOT" "$TMP_INITRD_DIR"
 copy_with_deps /usr/bin/rpm-ostree "$ROOT" "$TMP_INITRD_DIR"
+copy_with_deps /usr/libexec/libostree/ext/ostree-container "$ROOT" "$TMP_INITRD_DIR" yes
+mkdir -p "${TMP_INITRD_DIR}/etc"
+cp -r "${ROOT}/etc/containers" "${TMP_INITRD_DIR}/etc/containers"
+cp "${ROOT}/usr/libexec/libostree/ext/ostree-container" "${TMP_INITRD_DIR}/usr/bin/ostree-container"
+
 
 # Add the service that sits between the partitioning step and the
 # file processing that deploys the ostree.
 INITRAMFS_EXTRA="./initramfs-content"
-cp -r $INITRAMFS_EXTRA/* "$TMP_INITRD_DIR"
+cp -rv $INITRAMFS_EXTRA/* "$TMP_INITRD_DIR"
 
 # Add the ignition content
 cp "$IGNITION_PATH" "${TMP_INITRD_DIR}/config.ign"
@@ -161,19 +175,19 @@ cp "$IGNITION_PATH" "${TMP_INITRD_DIR}/config.ign"
 touch $INITRD_PATH
 INITRD_PATH=$(realpath $INITRD_PATH)
 
-pushd "$TMP_INITRD_FIRMWARE_DIR"
-find . -depth -print | cpio -oc > "$INITRD_PATH"
-popd # TMP_INITRD_FIRMWARE_DIR
+TMP_INITRD="${PWD}/initrd.img.tmp"
 
 pushd "$TMP_INITRD_DIR"
-find . -depth -print | cpio -oc | gzip -c >> "$INITRD_PATH"
+find . -depth -print | cpio -oc | gzip -c > "$TMP_INITRD"
 popd # TMP_INITRD_DIR
+
+cat "$CONTAINER_INITRD_PATH" "$TMP_INITRD" > $INITRD_PATH
 
 cp "$INITRD_PATH" "$ISOLINUX_INITRD_PATH"
 
 # Set up all the boot configuration
-EFI_GRUB_CFG="${BOOT_FILES_DIR}/grub.cfg"
-EFI_BOOT_CFG="${BOOT_FILES_DIR}/BOOT.conf"
+EFI_GRUB_CFG="${BOOT_FILES_PATH}/grub.cfg"
+EFI_BOOT_CFG="${BOOT_FILES_PATH}/BOOT.conf"
 cat > "$EFI_GRUB_CFG" << EOF
 set default="1"
 
@@ -198,7 +212,7 @@ search --no-floppy --set=root -l 'OCK'
 
 ### BEGIN /etc/grub.d/10_linux ###
 menuentry 'Install Oracle Container Host for Kubernetes' --class fedora --class gnu-linux --class gnu --class os {
-	linuxefi /images/pxeboot/vmlinuz rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120
+	linuxefi /images/pxeboot/vmlinuz rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0
 	initrdefi /images/pxeboot/initrd.img
 }
 EOF
@@ -206,16 +220,18 @@ EOF
 cp "$EFI_GRUB_CFG" "$EFI_BOOT_CFG"
 
 cat > "$ISOLINUX_CFG_PATH" << EOF
+serial 0 115200
+console 0
 default vesamenu.c32
 timeout 600
 
-display boot.msg
+#display boot.msg
 
 # Clear the screen when exiting the menu, instead of leaving the menu displayed.
 # For vesamenu, this means the graphical background is still displayed without
 # the menu itself for as long as the screen remains in graphics mode.
 menu clear
-menu title Oracle Linux 8.10.0
+menu title Oracle Container Host for Kubernetes
 menu vshift 8
 menu rows 18
 menu margin 8
@@ -223,8 +239,11 @@ menu margin 8
 menu helpmsgrow 15
 menu tabmsgrow 13
 
+# Background
+menu color screen 30,40 #000000ff #000000ff none
+
 # Border Area
-menu color border * #00000000 #00000000 none
+menu color border 0 #00000000 #00000000 none
 
 # Selected item
 menu color sel 0 #ffffffff #00000000 none
@@ -268,14 +287,39 @@ menu separator # insert an empty line
 label linux
   menu label ^Install Oracle Container Host for Kubernetes
   kernel vmlinuz
-  append initrd=initrd.img rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120
+  append initrd=initrd.img rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0
 
 menu end
 
 EOF
 
+# Create the EFI boot image
+dd if=/dev/zero of="$EFIBOOT_IMG_PATH" bs=512 count=30048
+mkfs.msdos -F 12 -n "$VOLID" "$EFIBOOT_IMG_PATH"
+mmd -i "$EFIBOOT_IMG_PATH" ::EFI
+mmd -i "$EFIBOOT_IMG_PATH" "::${BOOT_FILES_DIR}"
+mmd -i "$EFIBOOT_IMG_PATH" "::${BOOT_FILES_DIR}/fonts"
+mcopy -i "$EFIBOOT_IMG_PATH" $(find "${BOOT_FILES_PATH}" -depth -type f -print) "::${BOOT_FILES_DIR}"
+mcopy -i "$EFIBOOT_IMG_PATH" /boot/grub2/fonts/unicode.pf2 "::${BOOT_FILES_DIR}/fonts/unicode.pf2"
+
 podman rm "$CONTAINER_NAME"
 
 # Make the ISO
-mkisofs -V "$VOLID" -o "$ISO_FILE" -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -iso-level 3 -r -R "$ISO_DIR"
-isohybrid "$ISO_FILE"
+xorriso -as mkisofs \
+	-o "$ISO_FILE" \
+	-R -J -v -d -N \
+	-hide-rr-moved \
+	-no-emul-boot \
+	-boot-load-size 4 \
+	-boot-info-table \
+	-b isolinux/isolinux.bin \
+	-c isolinux/boot.cat \
+	-eltorito-alt-boot \
+	-no-emul-boot \
+	-eltorito-platform efi \
+	-eltorito-boot images/efiboot.img \
+	-isohybrid-gpt-basdat \
+	-V "$VOLID" \
+	-A "Oracle Container Host for Kubernetes Installer" \
+	"$ISO_DIR"
+

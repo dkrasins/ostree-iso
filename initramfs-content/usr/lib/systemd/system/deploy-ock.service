@@ -4,17 +4,12 @@ DefaultDependencies=false
 
 # Go between disks being partitioned and any file or mounting
 # activity.
-After=ignition-mount.service
-Before=ignition-files.service
+After=ignition-disks.service
+Before=ignition-mount.service
 Requires=systemd-udevd.service
 
 # Go after devices are enumerating
 After=systemd-udevd.service
-
-# Go after ignition does the disk work, ensuring
-# that all partitions are created before trying to
-# consume the rest of the space.
-After=ignition-disks.service
 
 # Don't get stuck in a loop if things go sideways
 OnFailure=emergency.target

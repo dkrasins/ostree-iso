@@ -2,22 +2,47 @@
 set -e
 set -x
 
-SYSROOT="/sysroot"
+SYSROOT="/sysroot-alt"
 BOOT="${SYSROOT}/boot"
 EFI="${BOOT}/efi"
+
+ROOT_LABEL="root"
+BOOT_LABEL="boot"
+
+pushd /dev/disk/by-partlabel
+EFI_LABEL=$(ls | grep EFI)
+popd
 
 OSTREE="${SYSROOT}/ostree"
 OSTREE_REPO="${OSTREE}/repo"
 OS_NAME=ock
+
+# Mount the root, boot, and efi partitions so
+# they can be installed to
+mkdir -p "$SYSROOT"
+mount "/dev/disk/by-partlabel/$ROOT_LABEL" "$SYSROOT"
+mkdir -p "$BOOT"
+mount "/dev/disk/by-partlabel/$BOOT_LABEL" "$BOOT"
+mkdir -p "$EFI"
+mount "/dev/disk/by-partlabel/$EFI_LABEL" "$EFI"
+
+mkdir -p /media
+mount /dev/cdrom /media
+
+# make a temp directory so that ostree is writing to
+# disk instead of memory
+rm -rf /var/tmp
+mkdir -p "$SYSROOT/tmp"
+ln -s "$SYSROOT/tmp" /var/tmp
 
 # Deploy the ostree
 ostree admin init-fs --modern "$SYSROOT"
 ostree config --repo "$OSTREE_REPO" set sysroot.readonly true
 ostree admin os-init "$OS_NAME" --sysroot "$SYSROOT"
 
-IMAGE="$(grep -o -e 'ostree-source=[^ ]*' /proc/cmdline)"
-if [ -z "$IMAGE" ]; then
-	IMAGE="oci-archive:/media/ostree.tar"
+IMAGE=
+if ! IMAGE="$(grep -o -e 'ostree-source=[^ ]*' /proc/cmdline)"; then
+	IMAGE="ostree-unverified-image:oci-archive:/media/ostree.tar"
 fi
 
 ostree container unencapsulate --repo="$OSTREE_REPO" --write-ref "$OS_NAME" "$IMAGE"
@@ -58,6 +83,8 @@ UUID=$ROOT_UUID / $ROOT_FILESYSTEM defaults 0 0
 UUID=$BOOT_UUID /boot $BOOT_FILESYSTEM defaults,sync 0 0
 UUID=$EFI_UUID /boot/efi vfat defaults,uid=0,gid=0,umask=077,shortname=winnt 0 2
 EOF
+
+umount -R "$SYSROOT"
 
 
 # from there, take all existing mounts under /sysroot and copy them
