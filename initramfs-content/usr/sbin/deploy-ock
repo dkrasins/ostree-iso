@@ -49,7 +49,7 @@ ostree container unencapsulate --repo="$OSTREE_REPO" --write-ref "$OS_NAME" "$IM
 
 ostree admin deploy --sysroot "$SYSROOT" --os "$OS_NAME" \
 	--karg-proc-cmdline \
-	--karg-delete ignition.firstboot \
+	--karg ignition.firstboot=0 \
 	"$OS_NAME"
 
 
