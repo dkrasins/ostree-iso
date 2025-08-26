@@ -297,13 +297,18 @@ menu end
 EOF
 
 # Create the EFI boot image
+find "${BOOT_FILES_PATH}" -depth -type f -print
 dd if=/dev/zero of="$EFIBOOT_IMG_PATH" bs=512 count=30048
 mkfs.msdos -F 12 -n "$VOLID" "$EFIBOOT_IMG_PATH"
 mmd -i "$EFIBOOT_IMG_PATH" ::EFI
 mmd -i "$EFIBOOT_IMG_PATH" "::${BOOT_FILES_DIR}"
 mmd -i "$EFIBOOT_IMG_PATH" "::${BOOT_FILES_DIR}/fonts"
-mcopy -i "$EFIBOOT_IMG_PATH" $(find "${BOOT_FILES_PATH}" -depth -type f -print) "::${BOOT_FILES_DIR}"
+for f in BOOTX64.EFI mmx64.efi grubx64.efi grub.cfg BOOT.conf; do
+	mcopy -i "$EFIBOOT_IMG_PATH" "${BOOT_FILES_PATH}/${f}" "::${BOOT_FILES_DIR}/${f}"
+done
+# mcopy -i "$EFIBOOT_IMG_PATH" $(find "${BOOT_FILES_PATH}" -depth -type f -print) "::${BOOT_FILES_DIR}"
 mcopy -i "$EFIBOOT_IMG_PATH" /boot/grub2/fonts/unicode.pf2 "::${BOOT_FILES_DIR}/fonts/unicode.pf2"
+#cp efiboot.img "$EFIBOOT_IMG_PATH"
 
 podman rm "$CONTAINER_NAME"
 
