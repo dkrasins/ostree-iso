@@ -170,7 +170,6 @@ INITRAMFS_EXTRA="./initramfs-content"
 cp -rv $INITRAMFS_EXTRA/* "$TMP_INITRD_DIR"
 
 # Add the ignition content
-cp "$IGNITION_PATH" "${TMP_INITRD_DIR}/config.ign"
 
 # Package the initramfs sections into a complete initramfs.  Create an
 # empty initramfs file so that an absolute path can be found and any
@@ -213,11 +212,6 @@ set timeout=30
 
 search --no-floppy --set=root -l 'OCK'
 
-### BEGIN /etc/grub.d/10_linux ###
-menuentry 'Install Oracle Container Host for Kubernetes' --class fedora --class gnu-linux --class gnu --class os {
-	linuxefi /images/pxeboot/vmlinuz rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0
-	initrdefi /images/pxeboot/initrd.img
-}
 EOF
 
 cp "$EFI_GRUB_CFG" "$EFI_BOOT_CFG"
@@ -287,14 +281,53 @@ menu tabmsg Press Tab for full configuration options on menu items.
 menu separator # insert an empty line
 menu separator # insert an empty line
 
+menu end
+
+EOF
+
+# If only one ignition config was given, create a menu entry for it.  If more
+# that one was provided via the mapping file, then create an entry for each.
+if [ ! -f configs.yaml ]; then
+	cp "$IGNITION_PATH" "${TMP_INITRD_DIR}/config.ign"
+	cat >> "$EFI_GRUB_CFG" << EOF
+### BEGIN /etc/grub.d/10_linux ###
+menuentry 'Install Oracle Container Host for Kubernetes' --class fedora --class gnu-linux --class gnu --class os {
+	linuxefi /images/pxeboot/vmlinuz rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0
+	initrdefi /images/pxeboot/initrd.img
+}
+EOF
+	cat >> $ISOLINUX_CFG_PATH << EOF
 label linux
   menu label ^Install Oracle Container Host for Kubernetes
   kernel vmlinuz
   append initrd=initrd.img rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0
 
-menu end
+EOF
+else
+	readarray ents < <(yq e -o=j -I=0 '.[]' configs.yaml)
+	for ent in "${ents[@]}"; do
+		name=$(echo "$ent" | yq '.name')
+		conf=$(echo "$ent" | yq '.file')
+
+		cp "$conf" "${TMP_INITRD_DIR}/${conf}"
+		cat >> "$EFI_GRUB_CFG" << EOF
+menuentry 'Install Oracle Container Host for Kubernetes (${name})' --class fedora --class gnu-linux --class gnu --class os {
+	linuxefi /images/pxeboot/vmlinuz rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0 ock.config=${conf}
+	initrdefi /images/pxeboot/initrd.img
+}
 
 EOF
+		cat >> "$ISOLINUX_CFG_PATH" << EOF
+label linux
+  menu label ^Install Oracle Container Host for Kubernetes (${name})
+  kernel vmlinuz
+  append initrd=initrd.img rw ip=dhcp rd.neednet=1 ignition.platform.id=file ignition.firstboot=1 systemd.firstboot=off rd.timeout=120 console=ttyS0 ock.config=${conf}
+
+EOF
+	done
+fi
+
+echo "menu end" >> "$ISOLINUX_CFG_PATH"
 
 # Create the EFI boot image
 find "${BOOT_FILES_PATH}" -depth -type f -print
