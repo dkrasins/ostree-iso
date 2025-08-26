@@ -158,8 +158,9 @@ copy_with_deps /usr/bin/rpm-ostree "$ROOT" "$TMP_INITRD_DIR"
 copy_with_deps /usr/bin/cut "$ROOT" "$TMP_INITRD_DIR"
 copy_with_deps /usr/libexec/libostree/ext/ostree-container "$ROOT" "$TMP_INITRD_DIR" yes
 copy_with_deps /usr/bin/bwrap "$ROOT" "$TMP_INITRD_DIR"
+copy_with_deps /usr/bin/cpio "$ROOT" "$TMP_INITRD_DIR"
 mkdir -p "${TMP_INITRD_DIR}/etc"
-cp -r "${ROOT}/etc/containers" "${TMP_INITRD_DIR}/etc/containers"
+cp "${ROOT}/etc/containers/policy.json" "${TMP_INITRD_DIR}/etc/policy.json"
 cp "${ROOT}/usr/libexec/libostree/ext/ostree-container" "${TMP_INITRD_DIR}/usr/bin/ostree-container"
 
 

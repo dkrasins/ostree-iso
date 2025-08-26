@@ -8,6 +8,8 @@ EFI="${BOOT}/efi"
 
 ROOT_LABEL="root"
 BOOT_LABEL="boot"
+ROOT_FILESYSTEM="xfs"
+BOOT_FILESYSTEM="xfs"
 
 pushd /dev/disk/by-partlabel
 EFI_LABEL=$(ls | grep EFI)
@@ -16,6 +18,10 @@ popd
 OSTREE="${SYSROOT}/ostree"
 OSTREE_REPO="${OSTREE}/repo"
 OS_NAME=ock
+
+# Disable ignition-files.  This can write stuff to /etc and
+# break selinux
+systemctl disable ignition-files.service
 
 # Mount the root, boot, and efi partitions so
 # they can be installed to
@@ -35,32 +41,10 @@ rm -rf /var/tmp
 mkdir -p "$SYSROOT/tmp"
 ln -s "$SYSROOT/tmp" /var/tmp
 
-# Deploy the ostree
-ostree admin init-fs --modern "$SYSROOT"
-ostree config --repo "$OSTREE_REPO" set sysroot.readonly true
-ostree admin os-init "$OS_NAME" --sysroot "$SYSROOT"
-
-IMAGE=
-if ! IMAGE="$(grep -o -e 'ostree-source=[^ ]*' /proc/cmdline)"; then
-	IMAGE="ostree-unverified-image:oci-archive:/media/ostree.tar"
-fi
-
-ostree container unencapsulate --repo="$OSTREE_REPO" --write-ref "$OS_NAME" "$IMAGE"
-
-ostree admin deploy --sysroot "$SYSROOT" --os "$OS_NAME" \
-	--karg-proc-cmdline \
-	--karg ignition.firstboot=0 \
-	"$OS_NAME"
-
-
+# Get disk details to fill things like grub entries and fstab
 ROOT_PATH="${SYSROOT}"
 BOOT_PATH="${ROOT_PATH}/boot"
 EFI_PATH="${BOOT_PATH}/efi"
-
-# Set up the fstab based on the current mount points
-# - get current mount points
-# - get UUID from device
-# - get fs type and options from mount table
 ROOT_DETAILS=$(findmnt --output SOURCE,FSTYPE,FS-OPTIONS -n --target "${ROOT_PATH}")
 BOOT_DETAILS=$(findmnt --output SOURCE,TARGET -n --target "${BOOT_PATH}")
 EFI_DETAILS=$(findmnt --output SOURCE,TARGET -n --target "${EFI_PATH}")
@@ -72,20 +56,60 @@ ROOT_UUID=$(blkid -o value -s UUID "$ROOT_DEVICE")
 BOOT_UUID=$(blkid -o value -s UUID "$BOOT_DEVICE")
 EFI_UUID=$(blkid -o value -s UUID "$EFI_DEVICE")
 
-MOUNTS=$(cat /proc/mount)
+# Deploy the ostree
+ostree admin init-fs --modern "$SYSROOT"
+ostree config --repo "$OSTREE_REPO" set sysroot.readonly true
+ostree admin os-init "$OS_NAME" --sysroot "$SYSROOT"
+
+IMAGE=
+if ! IMAGE="$(grep -o -e 'ostree-source=[^ ]*' /proc/cmdline)"; then
+	IMAGE="ostree-unverified-image:oci-archive:/media/ostree.tar"
+fi
+
+# A policy.json is required to unencapulsate the container.  There is
+# an issue with creating files under directories with additional cpios
+# so copy one from a known location.
+mkdir -p /etc/containers
+cp /etc/policy.json /etc/containers/policy.json
+ostree container unencapsulate --repo="$OSTREE_REPO" --write-ref "$OS_NAME" "$IMAGE"
+
+ostree admin deploy --sysroot "$SYSROOT" --os "$OS_NAME" \
+	--karg-proc-cmdline \
+	--karg ignition.firstboot=1 \
+	--karg root=UUID=${ROOT_UUID} \
+	"$OS_NAME"
+
+# Set up the fstab based on the current mount points
+# - get current mount points
+# - get UUID from device
+# - get fs type and options from mount table
 
 
+# Configure /etc/fstab for later ignition steps as well as the
+# boot process
 
-# boot, efi, and root are handled specially to protect against
-# cases where the same partition label is on multiple partitions
-cat > "${SYSROOT}/etc/fstab" << EOF
+COMMIT=$(ostree log --repo="$OSTREE_REPO" ${OS_NAME} | grep commit | cut -d' ' -f2)
+DEPLOY_DIR="${OSTREE}/deploy/${OS_NAME}/deploy/${COMMIT}.0"
+cat > "${DEPLOY_DIR}/etc/fstab" << EOF
 UUID=$ROOT_UUID / $ROOT_FILESYSTEM defaults 0 0
 UUID=$BOOT_UUID /boot $BOOT_FILESYSTEM defaults,sync 0 0
 UUID=$EFI_UUID /boot/efi vfat defaults,uid=0,gid=0,umask=077,shortname=winnt 0 2
 EOF
 
+cp -rn "${DEPLOY_DIR}/usr/lib/ostree-boot/efi" "${BOOT}"
+cp -rn "${DEPLOY_DIR}/usr/lib/ostree-boot/grub2" "${BOOT}"
+cp /etc/grub.cfg "${EFI}/EFI/redhat/grub.cfg"
+
+# Add the ignition to the initramfs for the new install
+TMP_INITRD="/etc/initrd.tmp"
+FULL_INITRD="/etc/initrd.full.tmp"
+REAL_INITRD=${BOOT}/ostree/${OS_NAME}-*/initramfs-*.img
+pushd /
+echo "config.ign" | cpio -oc | gzip -c > "$TMP_INITRD"
+popd
+cp $REAL_INITRD "$FULL_INITRD"
+cat "$FULL_INITRD" "$TMP_INITRD" > $REAL_INITRD
+rm -f "$TMP_INITRD" "$FULL_INITRD"
+
 umount -R "$SYSROOT"
-
-
-# from there, take all existing mounts under /sysroot and copy them
-# into the fstab with the same arguments
+systemctl halt

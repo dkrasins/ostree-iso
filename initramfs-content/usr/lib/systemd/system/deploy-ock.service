@@ -1,5 +1,5 @@
 [Unit]
-Description=Grow Root Filesystem
+Description=Deploy OCK
 DefaultDependencies=false
 
 # Go between disks being partitioned and any file or mounting
@@ -8,12 +8,25 @@ After=ignition-disks.service
 Before=ignition-mount.service
 Requires=systemd-udevd.service
 
+
+# A bunch of stuff needs to be interrupted if install succeeds
+Before=make-rootfs.service
+Before=grow-rootfs.service
+Before=ignition-files.service
+
 # Go after devices are enumerating
 After=systemd-udevd.service
 
 # Don't get stuck in a loop if things go sideways
 OnFailure=emergency.target
 OnFailureJobMode=isolate
+
+# If install succeeds, shut down immediately
+OnSuccess=shutdown.target
+OnSuccessJobMode=isolate
+
+# Don't run if there is already a deployed ostree
+ConditionKernelCommandLine=!ostree
 
 [Service]
 Type=oneshot
